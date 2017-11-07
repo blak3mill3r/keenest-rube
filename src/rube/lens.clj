@@ -80,6 +80,8 @@
             [ 1 0 _ ]   (-> resource-state      (delete-one!  context k delete-name))
 
             :else
-            (throw (ex-info "Modifying multiple resources in one mutation is not supported." {:names shall-be})))
+            (if (= 1 (count (merge was shall-be)))
+              (-> next-resource-state (replace-one! context k resource-name))
+              (throw (ex-info "Modifying multiple resources in one mutation is not supported." {:names (keys (merge was shall-be))}))))
 
      (assoc kube-state k))))

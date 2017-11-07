@@ -36,7 +36,7 @@
 
 (defn path-pattern-one
   [resource-kind]
-  (str "/api/v1/namespaces/{namespace}/"(name resource-kind)"/{name}"))
+  (str (prefix resource-kind)"/namespaces/{namespace}/"(name resource-kind)"/{name}"))
 
 (def success? #{200 201 202})
 
