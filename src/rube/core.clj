@@ -15,7 +15,7 @@
         kube-atom (atom {:kill-ch kill-ch :context ctx})]
     (doseq [resource-name api/supported-resources]
       (let [o (watch-init! kube-atom resource-name kill-ch)]
-        (or (#{:connected} o) (throw (ex-info "Could not initialize resource watchers" {:e o})))))
+        (or (get #{:connected} o) (throw (ex-info "Could not initialize resource watchers" {:e o})))))
     kube-atom))
 
 (defn disconnect!
@@ -29,10 +29,12 @@
 (defn intern-resources
   "Intern in the current namespace a symbol named after each kind of k8s resource.
   These are lenses with side-effects including making requests to the k8s API."
-  [kube-atom]
-  (doseq [resource-name api/supported-resources :let [lens (resource-lens resource-name kube-atom)]]
-    (intern *ns* (symbol resource-name) lens))
-  kube-atom)
+  ([kube-atom]
+   (intern-resources kube-atom *ns*))
+  ([kube-atom ns]
+   (doseq [resource-name api/supported-resources :let [lens (resource-lens resource-name kube-atom)]]
+     (intern *ns* (symbol resource-name) lens))
+   kube-atom))
 
 (defn context
   "Helper function to create a kube context"
@@ -60,13 +62,15 @@
         ctx                                 (:context @kube-atom)
         {:keys [body status] :as response}  (<!! (request
                                                   ctx {:method :get :path (api/path-pattern resource-name)}))]
-    (case status 200 (state-watch-loop-init! kube-atom resource-name body kill-ch) response)))
+    (case status 200
+          (state-watch-loop-init! kube-atom resource-name body kill-ch)
+          response)))
 
 (defn- reconnect-or-bust
   "Called when the watch channel closes (network problem?)."
-  [kube-atom resource-name kill-ch & {:keys [max-wait] :or {max-wait 3000}}]
+  [kube-atom resource-name kill-ch & {:keys [max-wait] :or {max-wait 8000}}]
   (loop [wait 500]
-    (or (#{:connected} (<!! (watch-init! kube-atom resource-name kill-ch)))
+    (or (get #{:connected} (watch-init! kube-atom resource-name kill-ch))
         (do (<!! (timeout wait))
             (if (> wait max-wait) :gave-up (recur (* 2 wait)))))))
 
