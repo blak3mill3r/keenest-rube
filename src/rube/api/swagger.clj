@@ -21,6 +21,7 @@
     "deployments"
     "statefulsets"
     "persistentvolumeclaims"
+    "replicasets"
     ;; "jobs" ;; broken
     })
 
