@@ -20,6 +20,7 @@
     "services"
     "deployments"
     "statefulsets"
+    "persistentvolumeclaims"
     ;; "jobs" ;; broken
     })
 
