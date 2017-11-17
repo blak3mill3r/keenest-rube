@@ -33,7 +33,7 @@
    (intern-resources kube-atom *ns*))
   ([kube-atom ns]
    (doseq [resource-name api/supported-resources :let [lens (resource-lens resource-name kube-atom)]]
-     (intern *ns* (symbol resource-name) lens))
+     (intern ns (symbol resource-name) lens))
    kube-atom))
 
 (defn context
