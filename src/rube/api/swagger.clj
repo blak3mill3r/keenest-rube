@@ -22,7 +22,7 @@
     "statefulsets"
     "persistentvolumeclaims"
     "replicasets"
-    ;; "jobs" ;; broken
+    "jobs"
     })
 
 (defn prefix [resource]
@@ -30,6 +30,7 @@
     v1-resource-names                  "/api/v1"
     apps-v1-beta1-resource-names       "/apis/apps/v1beta1"
     extensions-v1-beta1-resource-names "/apis/extensions/v1beta1"
+    batch-v1-resource-names            "/apis/batch/v1"
     (throw (ex-info "Unknown resource" {:resource resource}))))
 
 (defn path-pattern
@@ -38,7 +39,7 @@
 
 (defn path-pattern-one
   [resource-kind]
-  (str (prefix resource-kind)"/namespaces/{namespace}/"(name resource-kind)"/{name}"))
+  (str (prefix resource-kind) "/namespaces/{namespace}/"(name resource-kind)"/{name}"))
 
 (def success? #{200 201 202})
 
