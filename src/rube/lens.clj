@@ -35,7 +35,7 @@
                         {:method :put :path (api/path-pattern-one resource-map (name k))
                          :params {"namespace" (:namespace context) "name" (str n)}
                          :body (get next-resource-state n)}
-                        #(assoc-in % [k n] %2))))
+                        #(assoc-in % [n] %2))))
 
 (defn- create-one!
   "Do a POST to create a resource of kind `k` with name `n`, using its value from next-resource-state."
@@ -45,7 +45,7 @@
                         {:method :post :path (api/path-pattern resource-map (name k))
                          :params {"namespace" (:namespace context)}
                          :body (get next-resource-state n)}
-                        #(assoc-in % [k n] %2))))
+                        #(assoc-in % [n] %2))))
 
 (defn- delete-one!
   "Do a DELETE request on a resource of kind `k` with name `n`."
@@ -65,8 +65,8 @@
   By design, it only allows updating, creating, or deleting one resource at a time."
   [resource-map k {:as kube-state :keys [context]} f]
   (let [resource-state      (get kube-state k)
-        next-resource-state (get (update kube-state k f) k)
 
+        next-resource-state (get (update kube-state k f) k)
         [was shall-be still-is] (data/diff resource-state next-resource-state)
 
         [[resource-name _]] (seq shall-be)

@@ -11,14 +11,17 @@
 
 ;;(def whitelist #{"jobs"})
 
-(defrecord KubernetesInformer [server username password namespace whitelist]
+(defrecord KubernetesInformer [server username password namespace whitelist config-path config]
   component/Lifecycle
   (start [this]
     (let [resource-map (cond-> @(api/gen-resource-map server)
                          whitelist (select-keys whitelist))
           supported-resources (set (keys resource-map))
           kill-ch (a/chan) ;; Used for canceling in-flight requests
-          kube-atom (atom {:context this})]
+          ctx (or (get-in config config-path) {:server server :username username
+                                               :password password :namespace namespace
+                                               :whitelist whitelist})
+          kube-atom (atom {:context ctx})]
       (timbre/info "Starting Kubernetes Informer")
       (doseq [resource-name supported-resources]
         (timbre/debug "Initializing watch for: " resource-name)
@@ -127,14 +130,13 @@
           (state-watch-loop-init! kube-atom resource-map resource-name body kill-ch)
           response)))
 
-(comment (let [s (component/start (map->KubernetesInformer {:server "http://127.0.0.1:8001"
+#_(let [s (component/start (map->KubernetesInformer {:server "http://localhost:8001"
+                                                     :namespace "default"
 
-                                                            :namespace "default"
-                                                            :whitelist #{"namespaces"}
-
-                                                            }))]
-           (swap! (:namespaces (::informer s)) assoc "newns" {"metadata" {"name" "newns"}})
-           (Thread/sleep 1000)
-           (swap! (:namespaces (::informer s)) dissoc "newns")
-           (Thread/sleep 1000)
-           (component/stop s)))
+                                                     :whitelist #{"jobs" "namespaces"}}))]
+    (swap! (:namespaces (::informer s)) assoc-in ["newns" "metadata" "name"] "newns")
+    (println "KEYS: " (keys @(:namespaces (::informer s))))
+    (println (get-in  @(:namespaces (::informer s)) ["newns" "metadata" "name"]))
+    (swap! (:namespaces (::informer s)) dissoc "newns")
+    (println "KEYS2: " (keys @(:namespaces (::informer s))))
+    (component/stop s))
