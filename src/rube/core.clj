@@ -11,15 +11,15 @@
 
 ;;(def whitelist #{"jobs"})
 
-(defrecord KubernetesCluster [server username password namespace whitelist]
+(defrecord KubernetesInformer [server username password namespace whitelist]
   component/Lifecycle
   (start [this]
     (let [resource-map (cond-> @(api/gen-resource-map server)
                          whitelist (select-keys whitelist))
           supported-resources (set (keys resource-map))
           kill-ch (a/chan) ;; Used for canceling in-flight requests
-          kube-atom (atom {:context this}) ;;?????
-          ]
+          kube-atom (atom {:context this})]
+      (timbre/info "Starting Kubernetes")
       (doseq [resource-name supported-resources]
         (watch-init! kube-atom resource-map resource-name kill-ch))
       (assoc this
@@ -35,12 +35,12 @@
       (a/close! kc))
     (dissoc this ::api/resource-map)))
 
-(defmethod print-method KubernetesCluster
+(defmethod print-method KubernetesInformer
   [v ^java.io.Writer w]
   (.write w "<KubernetesCluster>"))
 
-(defn new-kubernetes-cluster [{:keys [server username password whitelist namespace]}]
-  )
+(defn new-kubernetes-informer [{:keys [server username password whitelist namespace] :as opts}]
+  (map->KubernetesInformer opts))
 
 (defn disconnect!
   "Tear down a kube atom"

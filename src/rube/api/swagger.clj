@@ -7,12 +7,10 @@
             [com.stuartsierra.component :as component]
             [clojure.data.json :as json]))
 
-(def gen-resource-map
+(defn gen-resource-map [server]
   "Queries Kubernetes for watchable resources, returning a map of resource name
   to URI path suitable for get operations."
-  (memoize
-   (fn [server]
-     (-> (md/chain (http/get (str server "/swagger.json")
+    (-> (md/chain (http/get (str server "/swagger.json")
                              {:accept "application/json"})
                    (fn [resp]
                      (let [body (bs/to-string (:body resp))
@@ -29,7 +27,7 @@
                              paths))))
          (md/catch Exception
              (fn [e]
-               (throw (ex-info "Could not connect to Kubernetes API server swagger server" {:status 404}))))))))
+               (throw (ex-info "Could not connect to Kubernetes API server swagger server" {:status 404}))))))
 
 (defn path-pattern
   "Return a resource path URI for a resource, pre-templated with `{namespace}`"
