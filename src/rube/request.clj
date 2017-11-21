@@ -2,7 +2,6 @@
   (:require
    [clojure.data.json :as json]
    [clojure.string :as str]
-
    [byte-streams :as bs]
    [manifold.stream :as s]
    [manifold.deferred :as d]
