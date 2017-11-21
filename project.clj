@@ -9,12 +9,12 @@
                  [org.clojure/data.json "0.2.6"]
                  [aleph "0.4.4-alpha4"]
                  [funcool/lentes "1.2.0"]
-                 [com.rpl/specter "1.0.4"]
+                 [com.stuartsierra/component "0.3.2"]
                  [org.clojure/core.match "0.3.0-alpha5"]]
 
   :profiles {:dev
              {:dependencies [[org.clojure/tools.namespace "0.2.11"]
-                             [mount "0.1.11"]]
+                             ]
               :repl-options {:init (println (char 7))}
               :plugins []
               :source-paths ["dev" "src"]}})
