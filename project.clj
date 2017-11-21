@@ -1,4 +1,4 @@
-(defproject keenest-rube "0.1.0-alpha0"
+(defproject keenest-rube "0.1.0-SNAPSHOT"
   :description "The state of a Kubernetes cluster, abstracted as a value in a Clojure atom."
   :url "https://github.com/blak3mill3r/keenest-rube"
   :license {:name "MIT"
