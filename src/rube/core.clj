@@ -1,86 +1,142 @@
 (ns rube.core
   (:require [clojure.string :as str]
-            [clojure.core.async :as a :refer [<!! timeout]]
+            [clojure.core.async :as a :refer [<!! timeout <! go-loop]]
+            [taoensso.timbre :as timbre]
             [rube.lens :refer [resource-lens]]
             [rube.api.swagger :as api]
-            [rube.request :refer [request watch-request]]
-            [rube.state :refer [update-from-snapshot update-from-event]]))
+            [com.stuartsierra.component :as component]
+            [rube.request :refer [request watch-request]]))
 
-(declare state-watch-loop! watch-init!)
+(declare watch-init!)
 
-(defn cluster
-  "Make a kube atom"
-  [ctx]
-  (let [kill-ch (a/chan)
-        kube-atom (atom {:kill-ch kill-ch :context ctx})]
-    (doseq [resource-name api/supported-resources]
-      (let [o (watch-init! kube-atom resource-name kill-ch)]
-        (or (get #{:connected} o) (throw (ex-info "Could not initialize resource watchers" {:e o})))))
-    kube-atom))
+;;(def whitelist #{"jobs"})
 
-(defn disconnect!
-  "Tear down a kube atom"
-  [kube-atom]
-  (if-let [ch (-> @kube-atom :kill-ch)]
-    (do (println "Closing kill chan") (a/close! ch))
-    (println "Hmm, there's no kill chan?"))
-  (reset! kube-atom {:state :disconnected}))
+(defrecord KubernetesInformer [server username password namespace whitelist config-path config]
+  component/Lifecycle
+  (start [this]
+    (let [resource-map (cond-> @(api/gen-resource-map server)
+                         whitelist (select-keys whitelist))
+          supported-resources (set (keys resource-map))
+          kill-ch (a/chan) ;; Used for canceling in-flight requests
+          ctx (or (get-in config config-path) {:server server :username username
+                                               :password password :namespace namespace
+                                               :whitelist whitelist})
+          kube-atom (atom {:context ctx})]
+      (timbre/info "Starting Kubernetes Informer")
+      (doseq [resource-name supported-resources]
+        (timbre/debug "Initializing watch for: " resource-name)
+        (watch-init! kube-atom resource-map resource-name kill-ch))
+      (assoc this
+             ::api/resource-map resource-map
+             ::kube-atom kube-atom
+             ::informer (reduce-kv
+                         (fn [acc k v]
+                           (assoc acc k (resource-lens kube-atom resource-map (keyword k)))) {}
+                         @kube-atom)
+             ::kill-ch kill-ch)))
+  (stop [this]
+    (timbre/info "Stopping Kubernetes Informer")
+    (when-let [kc (get this ::kill-ch)]
+      (timbre/info "Stopping in-flight Kubernetes Informer requests")
+      (a/close! kc))
+    (dissoc this ::api/resource-map)))
 
-(defn intern-resources
-  "Intern in the current namespace a symbol named after each kind of k8s resource.
-  These are lenses with side-effects including making requests to the k8s API."
-  ([kube-atom]
-   (intern-resources kube-atom *ns*))
-  ([kube-atom ns]
-   (doseq [resource-name api/supported-resources :let [lens (resource-lens resource-name kube-atom)]]
-     (intern ns (symbol resource-name) lens))
-   kube-atom))
+(defmethod print-method KubernetesInformer
+  [v ^java.io.Writer w]
+  (.write w "<KubernetesCluster>"))
 
-(defn context
-  "Helper function to create a kube context"
-  [server namespace & {:keys [username password]}]
-  {:server server
-   :namespace namespace
-   :username username
-   :password password})
+(defn new-kubernetes-informer
+  "Create a Kubernetes informer component, allowing for subscription and
+  manipulation of Kubernetes resources.
+
+  Returns a KubernetesInformer:
+
+  :rube.core/kube-atom - atom containing a live-updating view of cluster state.
+  :rube.core/informer - map of resource types to atoms allowing swap! and reset!
+                        operations to modify cluster state."
+  [{:keys [server namespace username password whitelist] :as opts}]
+  (map->KubernetesInformer opts))
+
+(defn update-from-snapshot
+  "Incorporate `items`, a snapshot of the existing set of resources of a given kind."
+  [resource-name items]
+  #(assoc % (keyword resource-name)
+          (into {}
+                (for [object items]
+                  (let [name (get-in object ["metadata" "name"])]
+                    [(str name) object])))))
+
+(defn update-from-event
+  "Map from k8s watch-stream messages -> state transition functions for the kube atom."
+  [resource-name name type object]
+  (timbre/infof "Applying %s %s update event to resource %s" resource-name type name)
+  (condp get type
+    #{ "DELETED" }          #(update % (keyword resource-name) dissoc name)
+    #{ "ADDED" "MODIFIED" } #(update % (keyword resource-name) assoc name object)
+    identity))
+
+(defn- reconnect-or-bust
+  "Called when the watch channel closes (network problem?)."
+  [kube-atom resource-map resource-name kill-ch & {:keys [max-wait] :or {max-wait 8000}}]
+  (loop [wait 500]
+    (timbre/debug "Attempting to reconnect...")
+    (or (get #{:connected} (watch-init! kube-atom resource-map resource-name kill-ch))
+        (do (<!! (timeout wait))
+            (if (> wait max-wait) :gave-up (recur (* 2 wait)))))))
+
+(defn- state-watch-loop! [kube-atom resource-map resource-name watch-ch kill-ch]
+  (go-loop [msg (<! watch-ch)
+            type (get msg "type")
+            object (get msg "object")]
+    (timbre/debug "State update recieved")
+    (if msg
+      (do
+        (swap! kube-atom (update-from-event resource-name (get-in object ["metadata" "name"])
+                                            type
+                                            object))
+        (recur (<! watch-ch)
+               (get msg "type")
+               (get msg "object")))
+      (case (reconnect-or-bust kube-atom resource-map resource-name kill-ch)
+        :connected (timbre/info "Kubernetes Informer reconnected.")
+        :gave-up   (timbre/error "Kubernetes Informer gave up trying to reconnect.")))))
 
 (defn- state-watch-loop-init!
   "Start updating the state with a k8s watch stream. `body` is the response with the current list of items and the `resourceVersion`."
-  [kube-atom resource-name {{v :resourceVersion} :metadata items :items :as body} kill-ch]
-  (swap! kube-atom (update-from-snapshot resource-name items))
-  (let [ctx (:context @kube-atom)]
-    (state-watch-loop! kube-atom
-                       resource-name
-                       (watch-request ctx v {:method :get :path (api/path-pattern resource-name) :kill-ch kill-ch})
-                       kill-ch))
+  [kube-atom resource-map resource-name body kill-ch]
+  (let [v (get-in body ["metadata" "resourceVersion"])
+        items (get-in body ["items"])]
+    (swap! kube-atom (update-from-snapshot resource-name items))
+    (let [ctx (:context @kube-atom)]
+      (state-watch-loop! kube-atom
+                         resource-map
+                         resource-name
+                         (watch-request
+                          ctx v {:method :get :path (api/path-pattern
+                                                     resource-map
+                                                     resource-name) :kill-ch kill-ch})
+                         kill-ch)))
   :connected)
 
 (defn- watch-init!
   "Do an initial GET request to list the existing resources of the given kind, then start tailing the watch stream."
-  [kube-atom resource-name kill-ch]
-  (let [resource-name                       (keyword resource-name)
-        ctx                                 (:context @kube-atom)
-        {:keys [body status] :as response}  (<!! (request
-                                                  ctx {:method :get :path (api/path-pattern resource-name)}))]
+  [kube-atom resource-map resource-name kill-ch]
+  (let [ctx (:context @kube-atom)
+        {:keys [body status] :as response} (<!! (request
+                                                 ctx {:method :get :path
+                                                      (api/path-pattern resource-map
+                                                                        resource-name)}))]
     (case status 200
-          (state-watch-loop-init! kube-atom resource-name body kill-ch)
+          (state-watch-loop-init! kube-atom resource-map resource-name body kill-ch)
           response)))
 
-(defn- reconnect-or-bust
-  "Called when the watch channel closes (network problem?)."
-  [kube-atom resource-name kill-ch & {:keys [max-wait] :or {max-wait 8000}}]
-  (loop [wait 500]
-    (or (get #{:connected} (watch-init! kube-atom resource-name kill-ch))
-        (do (<!! (timeout wait))
-            (if (> wait max-wait) :gave-up (recur (* 2 wait)))))))
+#_(let [s (component/start (map->KubernetesInformer {:server "http://localhost:8001"
+                                                     :namespace "default"
 
-(defn- state-watch-loop! [kube-atom resource-name watch-ch kill-ch]
-  (a/thread
-    (loop []
-      (let [{:keys [type object] :as msg} (<!! watch-ch)]
-        (case msg nil (case (reconnect-or-bust kube-atom resource-name kill-ch)
-                        :connected (println "Reconnected!")
-                        :gave-up   (println "Gave up!"))
-              (do
-                (swap! kube-atom (update-from-event resource-name (-> object :metadata :name keyword) type object))
-                (recur)))))))
+                                                     :whitelist #{"jobs" "namespaces"}}))]
+    (swap! (:namespaces (::informer s)) assoc-in ["newns" "metadata" "name"] "newns")
+    (println "KEYS: " (keys @(:namespaces (::informer s))))
+    (println (get-in  @(:namespaces (::informer s)) ["newns" "metadata" "name"]))
+    (swap! (:namespaces (::informer s)) dissoc "newns")
+    (println "KEYS2: " (keys @(:namespaces (::informer s))))
+    (component/stop s))

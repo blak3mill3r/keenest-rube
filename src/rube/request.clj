@@ -2,7 +2,6 @@
   (:require
    [clojure.data.json :as json]
    [clojure.string :as str]
-
    [byte-streams :as bs]
    [manifold.stream :as s]
    [manifold.deferred :as d]
@@ -13,7 +12,7 @@
 (defn- parameterize-path [path params]
   (when-not path (throw (ex-info "Path is required" {})))
   (reduce-kv (fn [s k v]
-               (str/replace s (re-pattern (str "\\{" (name k) "\\}")) v))
+               (str/replace s (re-pattern (str "\\{" (str k) "\\}")) v))
              path
              (or params {})))
 
@@ -49,7 +48,7 @@
                 (do
                   (a/put! return-ch
                           (-> (subs (str buf chunk) 0 (+ (count buf) i 1))
-                              (json/read-str :key-fn keyword)))
+                              (json/read-str)))
                   (recur (subs chunk (inc i))))
                 (recur (str buf chunk))))))))))
 
@@ -62,10 +61,9 @@
 
 (defn request [{:keys [username password namespace] :as ctx} {:keys [method path params query body kill-ch pool] :as req-opt}]
   (let [;; basic-auth (token username password)
-        params     (merge {:namespace namespace} params)
+        params     (merge {"namespace" namespace} params)
         watch?     (:watch query)
         return-ch  (chan)
-
         req (http/request
              {:query-params query
               :body (json/write-str body)
@@ -86,10 +84,11 @@
 
       ;; put the parsed body on the return channel
       (-> req
-          (d/chain (fn [z] (update z :body #(-> % bs/to-string (json/read-str :key-fn keyword)))))
+          (d/chain (fn [z]
+                     (update z :body #(-> % bs/to-string (json/read-str)))))
           (d/catch (fn [e]
                      (if-let [error-response (ex-data e)]
-                       (-> error-response (update :body (comp #(json/read-str % :key-fn keyword) bs/to-string)))
+                       (-> error-response (update :body (comp #(json/read-str %) bs/to-string)))
                        e)))
           (s/connect return-ch)))
 
