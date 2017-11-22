@@ -37,6 +37,32 @@
                          :body (get next-resource-state n)}
                         #(assoc-in % [n] %2))))
 
+(defn deep-merge* [& maps]
+  (let [f (fn [old new]
+            (if (and (map? old) (map? new))
+              (merge-with deep-merge* old new)
+              new))]
+    (if (every? map? maps)
+      (apply merge-with f maps)
+      (last maps))))
+
+;; https://github.com/circleci/frontend/blob/cba5cb228c4739d08baa070eecc01ec0b1ed2ab2/src-cljs/frontend/utils.cljs
+(defn deep-merge
+  [& maps]
+  (let [maps (filter identity maps)]
+    (assert (every? map? maps))
+    (apply merge-with deep-merge* maps)))
+
+(defn- patch-one!
+  "Do a PUT on an individual resource of kind `k` with name `n`, using its value from next-resource-state."
+  [next-resource-state context resource-map k n]
+  (-> next-resource-state
+      (resource-update! context
+                        {:method :patch :path (api/path-pattern-one resource-map (name k))
+                         :params {"namespace" (:namespace context) "name" (str n)}
+                         :body (get next-resource-state n)}
+                        #(update-in % [n] deep-merge %2))))
+
 (defn- create-one!
   "Do a POST to create a resource of kind `k` with name `n`, using its value from next-resource-state."
   [next-resource-state context resource-map k n]
@@ -68,7 +94,6 @@
 
         next-resource-state (get (update kube-state k f) k)
         [was shall-be still-is] (data/diff resource-state next-resource-state)
-
         [[resource-name _]] (seq shall-be)
         [[delete-name   _]] (seq was)
         pre-existing?       (if (get still-is resource-name) 1 0)]
@@ -77,6 +102,7 @@
 
             [ 0 0 _ ]   resource-state
             [ 0 1 1 ]   (-> next-resource-state (replace-one! context resource-map k resource-name))
+            [ 1 1 1 ]   (-> next-resource-state (patch-one! context resource-map k resource-name))
             [ 0 1 0 ]   (-> next-resource-state (create-one!  context resource-map k resource-name))
             [ 1 0 _ ]   (-> resource-state      (delete-one!  context resource-map k delete-name))
 
